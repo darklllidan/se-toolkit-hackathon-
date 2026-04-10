@@ -51,7 +51,7 @@ Read intent, not just keywords. Examples:
   "from 6 till 7 pm"                    → hour=15 (UTC), duration_hours=1 (if UTC+3)
 
 Dorm shorthand: "d1"=Dorm 1, "d6"=Dorm 6, "dorm3"=Dorm 3, "3rd dorm"=Dorm 3, etc.
-When no resource type is mentioned, ask once: "What would you like to book — study room, washer, or dryer?"
+CRITICAL: If user says "book" or "wanna book" without specifying a type, STOP and ask: "What would you like to book — study room, washer, or dryer?" Do NOT call any tool until resource type is clear.
 
 ── WHEN TO LIST vs WHEN TO BOOK ──
 - "book me a washer" with no dorm/floor hint → find_available_resources, show list, let user pick
