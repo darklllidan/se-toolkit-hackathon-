@@ -27,7 +27,7 @@ _client = AsyncOpenAI(
 MODEL = "openai/gpt-4o-mini"
 
 SYSTEM_PROMPT = """You are a friendly booking assistant for a university campus.
-You help students book study rooms (учебные комнаты), washing machines (стиральные машины), and dryers (сушилки).
+You help students book study rooms, washing machines, and dryers.
 Today (local time): {today}. Server timezone: {utc_offset}. This user lives in {user_dorm}.
 
 ═══ TIME (CRITICAL) ═══
@@ -35,35 +35,24 @@ Times are stored in UTC. Always convert the user's local time to UTC before pass
 Formula: UTC_hour = local_hour − offset  (e.g. {utc_offset}: user says 18:00 → hour = 15)
 "today" = {today} (local), "tomorrow" = next calendar day.
 
-═══ LANGUAGE — understand all variants ═══
-Dorm:       "dorm 7" / "d7" / "7th dorm" / "7 dorm"
-            "общага 7" / "7 общага" / "корпус 7" / "7й корп" / "д7" / "общежитие 7"
-Floor:      "floor 6" / "6th floor" / "6 floor"
-            "этаж 6" / "6й этаж" / "6 этаж" / "шестой этаж"
+═══ INPUT VARIANTS — understand all of these ═══
+Dorm:       "dorm 7" / "d7" / "7th dorm" / "7 dorm" / "d 7" / "dorm7"
+Floor:      "floor 6" / "6th floor" / "6 floor" / "f6" / "floor6"
 Study room: "study room" / "study" / "room"
-            "учебка" / "учебная" / "учебн" / "переговорка" / "читалка"
-Washer:     "washer" / "washing machine" / "wash"
-            "стиралка" / "стирка" / "постирать" / "стиральная" / "стирал"
+Washer:     "washer" / "washing machine" / "wash" / "laundry"
 Dryer:      "dryer" / "dry"
-            "сушилка" / "сушка" / "сушильная"
-My dorm:    "my dorm" / "my building" / "in my dorm"
-            "мой корпус" / "моя общага" / "в моей" / "в моём" / "у меня в" → use {user_dorm}
-Tomorrow:   "tomorrow" / "завтра"
-Book:       "book" / "wanna book" / "get me" / "reserve"
-            "забронируй" / "запиши" / "бронь" / "хочу забронировать" / "возьми"
-Time:       "at 18:00" / "at 6 pm" / "from 6"
-            "в 18" / "в 18:00" / "с 18" / "в 6 вечера" / "18-00"
-Duration:   "from 6 till 7" / "for 2 hours" / "1 hour"
-            "с 6 до 7" / "на 2 часа" / "на час"
+My dorm:    "my dorm" / "my building" / "in my dorm" / "my place" → use {user_dorm}
+Time:       "at 18:00" / "at 6 pm" / "from 6" / "6pm" / "18:00" / "at 6"
+Duration:   "from 6 till 7" / "for 2 hours" / "1 hour" / "till 8"
 
 ═══ DECISION TREE ═══
 1. Dorm + floor + type + time  → book_by_name("DX-FY", category, hour_utc, duration)  ← IMMEDIATELY
 2. Dorm + type + time (no floor) → book_random(type, date, hour_utc, location_hint="Dorm X")
-3. "random"/"any"/"случайную"/"любую" + type + time → book_random immediately (no listing)
+3. "random" / "any" / "pick one" + type + time → book_random immediately (no listing)
 4. Type + time, no location → find_available_resources(type, date), show results, ask which one
-5. No resource type at all → ask: "Что бронируем — учебку, стиралку или сушилку?"
+5. No resource type at all → ask: "What would you like to book — study room, washer, or dryer?"
 
-"my dorm"/"мой корпус"/"в моей общаге" → location_hint = "{user_dorm}", NEVER ask which dorm.
+"my dorm" / "my building" / "my place" → location_hint = "{user_dorm}", NEVER ask which dorm.
 
 ═══ RESOURCE NAMES ═══
 Pattern: "[Type] DX-FY-N" (X=dorm number, Y=floor number, N=unit number).
@@ -76,7 +65,6 @@ all_taken   → fully booked at that time. Say what's taken, suggest next free s
 no_resources → no such resources in that dorm. Suggest another dorm or time.
 
 ═══ STYLE ═══
-Reply in the SAME language as the user (Russian message → Russian reply, English → English).
 Be friendly and brief — 1–2 sentences for success, direct about errors.
 Confirm with: resource name, location, date, local time.
 Never show UUIDs or internal IDs.
@@ -602,30 +590,20 @@ async def run_assistant(
 
         # ── Dorm ─────────────────────────────────────────────────────────────
         dm = _re.search(
-            r"(?:dorm|d)[.\s-]*(\d+)"                                # dorm7 / d7 / d-7
-            r"|(\d+)[.\s]*(?:st|nd|rd|th)?[.\s]*dorm"                # 7th dorm
-            r"|(?:общаг\w*|общежи\w*|корпус\w*|корп)\s*[#-]?\s*(\d+)"  # общага 7 / корпус 7
-            r"|(\d+)\s*(?:й|я|ой|ий|ый)?\s*(?:общаг\w*|корпус\w*|корп\b)"  # 7й корпус
-            r"|(?<!\w)д\s*(\d+)(?!\w)",                               # д7 (RU shorthand)
+            r"(?:dorm|d)[.\s-]*(\d+)"               # dorm7 / d7 / d-7 / d 7
+            r"|(\d+)[.\s]*(?:st|nd|rd|th)?[.\s]*dorm",  # 7th dorm / 7 dorm
             t,
         )
         dorm_n = next((g for g in (dm.groups() if dm else []) if g), None)
 
-        # "my dorm" / "мой корпус" → use user's building
-        _my_dorm_phrases = [
-            "my dorm", "my building", "in my dorm",
-            "мой корпус", "моей общаг", "моей корп", "моя общаг",
-            "в моём корпус", "в моем корпус", "в моей", "у меня в", "своей общаг",
-        ]
-        if not dorm_n and user_building and any(p in t for p in _my_dorm_phrases):
+        # "my dorm" / "my building" → use user's building
+        if not dorm_n and user_building and any(p in t for p in ["my dorm", "my building", "in my dorm", "my place"]):
             dorm_n = str(user_building)
 
         # ── Floor ─────────────────────────────────────────────────────────────
         fm = _re.search(
-            r"floor\s*(\d+)"                                          # floor 6
-            r"|(\d+)\s*(?:st|nd|rd|th)\s*floor"                      # 6th floor
-            r"|этаж\w*\s*(\d+)"                                       # этаж 6
-            r"|(\d+)\s*(?:й|ой|ый|ий)?\s*этаж",                      # 6й этаж
+            r"floor[.\s]*(\d+)"                     # floor 6 / floor6 / f6
+            r"|(\d+)[.\s]*(?:st|nd|rd|th)[.\s]*floor",  # 6th floor
             t,
         )
         floor_n = next((g for g in (fm.groups() if fm else []) if g), None)
@@ -635,43 +613,44 @@ async def run_assistant(
 
         # ── Category ──────────────────────────────────────────────────────────
         cat = None
-        _study   = ["study room", "study", "учебк", "учебна", "учебн", "переговор", "читал"]
-        _wash    = ["wash", "washer", "стирал", "стирк", "постир", "стиральн"]
-        _dry     = ["dryer", "dry", "сушил", "сушк", "сушильн"]
-        if any(w in t for w in _study):
+        if any(w in t for w in ["study room", "study", "laundry room"]):
             cat = "study_room"
-        elif any(w in t for w in _wash):
+        elif any(w in t for w in ["wash", "washer", "laundry"]):
             cat = "washing_machine"
-        elif any(w in t for w in _dry):
+        elif any(w in t for w in ["dryer", "dry"]):
             cat = "dryer"
-        elif "room" in t:          # bare "room" → study room
+        elif "room" in t:
             cat = "study_room"
         if not cat:
             return None
 
         # ── Time ──────────────────────────────────────────────────────────────
-        # Matches: "from 18" / "at 6" / "в 18" / "с 18" / "18:00" / "18-00"
+        # Matches: "from 18" / "at 6" / "18:00" / "6pm"
         hm = _re.search(
-            r"(?:from|at|в|с)\s+(\d{1,2})(?:[:\-](\d{2}))?"         # keyword + hour[:min]
-            r"|(\d{2})[:\-](\d{2})(?!\d)",                            # HH:MM or HH-MM
+            r"(?:from|at)\s+(\d{1,2})(?:[:\-](\d{2}))?"   # from/at + hour
+            r"|(\d{1,2})pm\b"                               # 6pm
+            r"|(\d{2})[:\-](\d{2})(?!\d)",                  # 18:00 / 18-00
             t,
         )
         hour_raw = None
+        is_pm = False
         if hm:
             g = hm.groups()
-            if g[0]:          # keyword match → g[0] is the hour
+            if g[0]:          # from/at HH
                 hour_raw = g[0]
-            elif g[2]:        # HH:MM match
+            elif g[2]:        # Xpm
                 hour_raw = g[2]
+                is_pm = True
+            elif g[3]:        # HH:MM
+                hour_raw = g[3]
 
         if not hour_raw:
             return None
 
         h = int(hour_raw)
 
-        # PM / вечера / ночи
-        is_pm = any(w in t for w in ["pm", "вечера", "вечер", "ночи", "ночь"])
-        is_am = any(w in t for w in ["am", "утра", "утром"])
+        is_pm = is_pm or "pm" in t
+        is_am = "am" in t
         if is_pm and h < 12:
             h += 12
         elif is_am and h == 12:
@@ -681,20 +660,20 @@ async def run_assistant(
 
         # ── Duration ─────────────────────────────────────────────────────────
         dur = 1
-        dur_m = _re.search(r"(?:till|until|до)\s+(\d{1,2})", t)
+        dur_m = _re.search(r"(?:till|until)\s+(\d{1,2})", t)
         if dur_m:
             h_end = int(dur_m.group(1))
             if is_pm and h_end < 12 and h_end <= h:
                 h_end += 12
             dur = (h_end - h) % 24 or 1
         else:
-            dur_h = _re.search(r"(?:на|for)\s+(\d+)\s*(?:час|hour)", t)
+            dur_h = _re.search(r"for\s+(\d+)\s*hour", t)
             if dur_h:
                 dur = int(dur_h.group(1))
 
         # ── Date ─────────────────────────────────────────────────────────────
         target_date = today
-        if any(w in t for w in ["tomorrow", "завтра"]):
+        if "tomorrow" in t:
             from datetime import timedelta as _td
             target_date = (now_local.date() + _td(days=1)).isoformat()
 
