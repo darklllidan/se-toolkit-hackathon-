@@ -1,8 +1,8 @@
-FROM python:3.12-slim AS base
+FROM python:3.12-slim
 WORKDIR /app
 
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir setuptools && pip install --no-cache-dir -e .
 
 COPY app/ app/
 

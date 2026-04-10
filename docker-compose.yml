@@ -67,6 +67,22 @@ services:
     networks:
       - internal
 
+  bot:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:-}
+      BACKEND_INTERNAL_URL: http://backend:8000
+      BOT_INTERNAL_SECRET: ${BOT_INTERNAL_SECRET}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      TZ: ${TZ:-Europe/Moscow}
+    depends_on:
+      - backend
+    networks:
+      - internal
+
   nginx:
     image: nginx:1.25-alpine
     restart: unless-stopped
