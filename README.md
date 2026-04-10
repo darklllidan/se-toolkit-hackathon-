@@ -1,145 +1,163 @@
 # Campus Resource Sync
 
-One-line description: a web application for browsing and booking shared campus resources in real time, with conflict-safe scheduling, live updates, and an embedded AI assistant.
+A real-time web platform for booking shared university campus resources — laundry, study rooms, meeting rooms, and more — with live updates, conflict-safe scheduling, an AI assistant, and an admin panel.
 
 ## Demo
 
-Screenshots of the student dashboard (timeline view) and the booking flow:
-
-| Timeline & resources | Booking dialog |
-|----------------------|----------------|
-| ![Dashboard — timeline view](docs/screenshots/dashboard-timeline.png) | ![Booking flow](docs/screenshots/booking-modal.png) |
+> Add your screenshots here
 
 ## Product context
 
 ### End users
 
-- **Primary:** university students who use shared campus facilities (dorms, laundry rooms, study rooms, meeting rooms, rest areas).
-- **Secondary:** campus administrators (TA/admin accounts) who monitor resources and bookings.
+- **Students** living in university dorms who need shared facilities (washing machines, dryers, study rooms, meeting rooms, rest areas).
+- **Teaching Assistants (TAs)** who need extended access to study rooms.
+- **Campus administrators** who manage resource availability and monitor all bookings.
 
-### Problem that your product solves for end users
+### Problem
 
-Students often walk to a washing machine, study room, or meeting room only to find it already in use. There is no reliable, shared view of **who booked what and when**, so time is wasted and small conflicts arise around shared spaces.
+Students walk to a shared resource — a washing machine, a study room — only to find it already occupied. There is no central place to see what is free, reserve a slot in advance, or get notified when something becomes available. Conflicts and wasted trips are a daily friction point.
 
-### Your solution
+### Solution
 
-**Campus Resource Sync** gives students a single place to see resources, pick a free time slot, and book it. The backend enforces **no overlapping bookings** at the database level. The dashboard stays fresh with **WebSocket** updates, and an **AI assistant** helps with natural-language questions and actions (e.g. checking availability or booking through chat).
+Campus Resource Sync gives every student a live timeline of all campus resources with a visual booking interface. Reservations are enforced at the database level — double-booking is impossible. The dashboard updates in real time over WebSockets so everyone sees the current state. An AI assistant handles natural-language requests ("book a washer in my dorm tomorrow at 10") on top of the same live data.
 
 ## Features
 
 ### Implemented
 
-- Student **registration** and **login** (JWT access/refresh).
-- **Dashboard** with a **timeline** of resources and **“My Bookings”** with cancel.
-- **Booking** with time-slot selection; **double-booking prevented** by PostgreSQL constraints.
-- **Live** connection indicator; updates pushed over **WebSockets**.
-- **AI assistant** panel (OpenRouter) for conversational help and booking-related actions.
-- **Admin** login, resource list, toggling resources between **available** and **maintenance**, and viewing/cancelling **all bookings**.
-- **Docker Compose** stack: PostgreSQL, migrations, FastAPI, React build, Nginx reverse proxy.
+- **Student registration and login** — JWT-based auth with access and refresh tokens; optional TA code grants extended booking privileges.
+- **Resource timeline** — scrollable 24-hour grid grouped by floor, showing all bookings for the selected dorm and date.
+- **Booking modal** — time-slot picker, duration selector (students: 1–3 h, TAs/admins: 1–8 h), instant confirmation.
+- **My Bookings tab** — list of upcoming confirmed reservations with one-click cancel.
+- **Real-time updates** — WebSocket connection keeps the timeline and booking counter current for all connected users.
+- **AI assistant** — floating chat panel powered by OpenRouter; understands natural-language requests, books or cancels resources, knows the user's dorm, and refreshes the timeline automatically after every action.
+- **Admin panel** — separate login, resource management (toggle available ↔ maintenance), full bookings table with per-row cancel.
+- **Maintenance overlay** — resources in maintenance state show a red hatched overlay on the timeline and cannot be booked.
+- **Dark / light theme** toggle, persisted per browser.
+- **Telegram bot** — scheduled reminders and booking management via chat (`bot/`).
+- **Full Docker Compose stack** — PostgreSQL, Alembic migrations, FastAPI backend, React frontend, Nginx reverse proxy, Telegram bot, all wired together.
 
-### Not yet implemented / out of scope for the default stack
+### Not yet implemented
 
-- **Telegram bot** code exists under `bot/`, but it is **not** included in the root `docker-compose.yml`; running it requires a separate process or Compose service (bot token, secrets).
-- **Creating new resource records** from the UI (seed/migrations supply initial resources; admins can enable/disable and manage bookings).
-- **HTTPS / Let’s Encrypt** in-repo (deployment steps below assume HTTP on port 80; TLS can be added in front of Nginx).
-- **Email / push notifications** for reminders (not part of the default Compose file).
+- **HTTPS / TLS** — the default stack serves HTTP on port 80; a reverse proxy (Caddy, Certbot + Nginx) can be added in front.
+- **Email notifications** — no email reminders in the current stack.
+- **Resource creation via UI** — admins can toggle status and manage bookings; adding new resource records requires a migration or direct DB insert.
+- **Mobile-native app** — the web app is responsive but there is no dedicated iOS/Android client.
 
 ## Usage
 
-1. **Open the app** in a browser at the URL where the stack is served (by default **`http://<server-ip>`** on port **80**, or `http://localhost` when testing on the VM itself).
-2. **Register** as a student (name, building, room, password) or use an existing account.
-3. On the **Timeline** tab, pick a resource and a free slot, then **confirm** the booking.
-4. Switch to **My Bookings** to see upcoming reservations and **cancel** if needed.
-5. Use the **AI assistant** widget for questions or guided actions (requires a valid `OPENROUTER_API_KEY` in `.env`).
-6. **Admins** sign in via the admin login route in the app and use the admin dashboard to manage resource status and bookings.
+1. Open `http://<server-ip>` in a browser.
+2. **Register** as a student — fill in your name, dorm number, room, and password. If you have a TA code, enter it to unlock extended booking durations.
+3. On the **Timeline** tab, select a date and dorm, click any free cell to open the booking modal, pick a time slot and duration, and confirm.
+4. Switch to **My Bookings** to view upcoming reservations and cancel them if needed.
+5. Use the **AI assistant** button (bottom-right) to book or check availability using natural language — for example:
+   - *"Book a washing machine in my dorm tomorrow at 9"*
+   - *"Find me 3 random study rooms for tomorrow at 14:00"*
+   - *"Cancel my booking for tomorrow"*
+6. **Admins** navigate to `/admin/login`, sign in with the admin credentials, and use the admin panel to toggle resource status or cancel any booking.
 
-API documentation is available at **`/api/docs`** (Swagger) when the backend is exposed accordingly (through Nginx: **`/api/docs`**).
+API documentation (Swagger UI) is available at `http://<server-ip>/api/docs`.
 
 ## Deployment
 
-Target environment: **Ubuntu 24.04 LTS** (same family as typical university lab VMs).
+**Target OS:** Ubuntu 24.04 LTS
 
-### What should be installed on the VM
+### What must be installed on the VM
 
-- **Git** — clone the repository.
-- **Docker Engine** and the **Docker Compose plugin** — run the stack in containers.
-- **Open firewall port 80** (and **443** if you add HTTPS later) so users can reach Nginx.
+| Tool | Purpose |
+|------|---------|
+| **Git** | Clone the repository |
+| **Docker Engine** + **Compose plugin** | Run the containerised stack |
 
-Optional but useful: `curl`, `ufw` (firewall), `htop`.
+Port **80** must be open in the VM's firewall (and **443** if you add HTTPS later).
 
-### Step-by-step deployment instructions
+### Step-by-step
 
-1. **Update the system and install Git**
+**1. System update and Git**
 
-   ```bash
-   sudo apt update && sudo apt upgrade -y
-   sudo apt install -y git
-   ```
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y git
+```
 
-2. **Install Docker** (official convenience script from Docker, or follow [Docker’s Ubuntu guide](https://docs.docker.com/engine/install/ubuntu/))
+**2. Install Docker**
 
-   ```bash
-   curl -fsSL https://get.docker.com -o get-docker.sh
-   sudo sh get-docker.sh
-   sudo usermod -aG docker "$USER"
-   ```
+```bash
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker "$USER"
+newgrp docker   # apply group without logging out
+```
 
-   Log out and back in so the `docker` group applies (or use `newgrp docker`).
+**3. Open firewall**
 
-3. **Allow HTTP** (adjust if you use another firewall tool)
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw enable
+```
 
-   ```bash
-   sudo ufw allow OpenSSH
-   sudo ufw allow 80/tcp
-   sudo ufw enable
-   ```
+**4. Clone the repository**
 
-4. **Clone the product repository**
+```bash
+git clone https://github.com/darklllidan/se-toolkit-hackathon-.git
+cd se-toolkit-hackathon-
+```
 
-   ```bash
-   git clone https://github.com/YOUR_ORG_OR_USER/YOUR_REPO.git
-   cd YOUR_REPO
-   ```
+**5. Configure environment**
 
-5. **Configure environment**
+```bash
+cp .env.example .env
+nano .env
+```
 
-   ```bash
-   cp .env.example .env
-   nano .env   # or vim
-   ```
+Required values to fill in:
 
-   Set at least:
+| Variable | Description |
+|----------|-------------|
+| `POSTGRES_PASSWORD` | Strong database password |
+| `SECRET_KEY` | Random 32-byte hex — `openssl rand -hex 32` |
+| `BOT_INTERNAL_SECRET` | Random 32-byte hex — `openssl rand -hex 32` |
+| `OPENROUTER_API_KEY` | API key from [openrouter.ai](https://openrouter.ai) (required for AI assistant) |
+| `FRONTEND_URL` | Public origin as seen by the browser, e.g. `http://YOUR_VM_IP` |
+| `BOT_TOKEN` | Telegram bot token from @BotFather (optional — leave blank to disable) |
+| `ADMIN_PASSWORD` | Password for the seeded admin account (default: `admin123`) |
 
-   - `POSTGRES_*` — strong database password.
-   - `SECRET_KEY`, `BOT_INTERNAL_SECRET` — long random strings (e.g. `openssl rand -hex 32`).
-   - `OPENROUTER_API_KEY` — if you use the AI assistant.
-   - `FRONTEND_URL` — **public origin** of the web app as users open it (e.g. `http://YOUR_VM_IP` or your domain). This must match the browser origin for CORS.
+> **Never commit `.env` to Git.**
 
-   Never commit `.env` to Git.
+**6. Build and start**
 
-6. **Build and start the stack**
+```bash
+docker compose up -d --build
+```
 
-   ```bash
-   docker compose up -d --build
-   ```
+Wait for the `migrate` service to finish, then check all services are up:
 
-   Wait until `migrate` completes and `backend`, `frontend`, `nginx`, and `db` are running (`docker compose ps`).
+```bash
+docker compose ps
+```
 
-7. **Verify**
+**7. Verify**
 
-   - From your laptop: open `http://YOUR_VM_IP` (or your DNS name).
-   - Optional: `curl -sSf http://YOUR_VM_IP/api/docs | head` to confirm the API is proxied.
+```bash
+curl -I http://localhost        # should return 200
+curl http://localhost/api/docs  # should return Swagger HTML
+```
 
-8. **Updates after code changes**
+Open `http://YOUR_VM_IP` in a browser — the app should load.
 
-   ```bash
-   cd YOUR_REPO
-   git pull
-   docker compose up -d --build
-   ```
+**8. Updating after code changes**
 
-`docker-compose.override.yml` is intended for **local development** (extra ports, backend reload). On a production VM you can **remove or not copy** that file so only `docker-compose.yml` is used.
+```bash
+git pull
+docker compose up -d --build
+```
 
 ---
 
-**Repository layout:** `backend/` (FastAPI), `frontend/` (React + Vite), `nginx/` (reverse proxy), `bot/` (optional Telegram bot, not started by default Compose).
+### Notes
+
+- `docker-compose.override.yml` adds hot-reload and exposed ports for **local development**. On a production VM, either delete it or do not copy it — `docker compose` will then use only `docker-compose.yml`.
+- Default admin credentials: username `Admin`, password as set in `ADMIN_PASSWORD` (default `admin123`). Change this before going public.
+- The Telegram bot starts automatically if `BOT_TOKEN` is set in `.env`. Leave it empty to keep the service from connecting.

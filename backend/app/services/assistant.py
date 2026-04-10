@@ -24,42 +24,51 @@ _client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
 )
 
-MODEL = "mistralai/mistral-nemo"
+MODEL = "openai/gpt-4o-mini"
 
-SYSTEM_PROMPT = """You are a friendly, smart booking assistant for a university campus.
-You help with study rooms, washing machines, and dryers — nothing else.
-Today: {today}. This user lives in {user_dorm}.
+SYSTEM_PROMPT = """You are a friendly booking assistant for a university campus.
+You help students book study rooms, washing machines, and dryers.
+Today (local time): {today}. Server timezone: {utc_offset}. This user lives in {user_dorm}.
 
-Your job is to understand what the user wants and get it done with minimal back-and-forth.
-Respond naturally, like a helpful person — not like a bot reading from a script.
+═══ TIME (CRITICAL) ═══
+Times are stored in UTC. Always convert the user's local time to UTC before passing to tools.
+Formula: UTC_hour = local_hour − offset  (e.g. {utc_offset}: user says 18:00 → hour = 15)
+"today" = {today} (local), "tomorrow" = next calendar day.
 
-── UNDERSTANDING REQUESTS ──
-Read intent, not just keywords. Examples:
-  "book a washer at 10 tomorrow"        → book_random(washing_machine, tomorrow, 10, count=1)
-  "book me 3 random study rooms at 14"  → book_random(study_room, date, 14, count=3)
-  "random one from d6"                  → book_random(..., location_hint="Dorm 6", count=1)
-  "pick one from dorm 3"                → book_random(..., location_hint="Dorm 3", count=1)
-  "my dorm" / "my building"             → location_hint="{user_dorm}" (never ask which dorm)
-  "book d7-f6 washer at 10"             → book_by_name("D7-F6", ..., category="washing_machine")
-  "what study rooms are free tomorrow?" → find_available_resources(study_room, date)
+═══ INPUT VARIANTS — understand all of these ═══
+Dorm:       "dorm 7" / "d7" / "7th dorm" / "7 dorm" / "d 7" / "dorm7"
+Floor:      "floor 6" / "6th floor" / "6 floor" / "f6" / "floor6"
+Study room: "study room" / "study" / "room"
+Washer:     "washer" / "washing machine" / "wash" / "laundry"
+Dryer:      "dryer" / "dry"
+My dorm:    "my dorm" / "my building" / "in my dorm" / "my place" → use {user_dorm}
+Time:       "at 18:00" / "at 6 pm" / "from 6" / "6pm" / "18:00" / "at 6"
+Duration:   "from 6 till 7" / "for 2 hours" / "1 hour" / "till 8"
 
-Dorm shorthand: "d1"=Dorm 1, "d6"=Dorm 6, "dorm3"=Dorm 3, "3rd dorm"=Dorm 3, etc.
+═══ DECISION TREE ═══
+1. Dorm + floor + type + time  → book_by_name("DX-FY", category, hour_utc, duration)  ← IMMEDIATELY
+2. Dorm + type + time (no floor) → book_random(type, date, hour_utc, location_hint="Dorm X")
+3. "random" / "any" / "pick one" + type + time → book_random immediately (no listing)
+4. Type + time, no location → find_available_resources(type, date), show results, ask which one
+5. No resource type at all → ask: "What would you like to book — study room, washer, or dryer?"
 
-── WHEN TO LIST vs WHEN TO BOOK ──
-- "book me a washer" with no dorm/floor hint → find_available_resources, show list, let user pick
-- "book me a washer in d6" or "pick one" or "random" → book_random immediately, no listing
-- User picks from a list you showed → book_by_name or book_random with location_hint
+"my dorm" / "my building" / "my place" → location_hint = "{user_dorm}", NEVER ask which dorm.
 
-── TOOL ERRORS ──
-book_by_name "not_found" → name didn't match, ask user to clarify (don't say it's taken)
-book_by_name "all_taken" → suggest next free time or different floor
-book_random "all_taken"  → say nothing's free at that time, suggest alternatives
+═══ RESOURCE NAMES ═══
+Pattern: "[Type] DX-FY-N" (X=dorm number, Y=floor number, N=unit number).
+book_by_name("D7-F6", category="study_room") matches Study Room D7-F6-1, D7-F6-2 etc. and books the first free one.
+Always pass category when you know the resource type — this prevents wrong type matches.
 
-── STYLE ──
-- Confirm bookings with: name, location, date, time. Short sentence, friendly tone.
-- If something fails, be direct about why and suggest what to do next.
-- Never show IDs or UUIDs.
-- Decline politely if asked about anything unrelated to campus bookings.
+═══ ERRORS ═══
+not_found   → resource name didn't match DB. Show list with find_available_resources, ask user to pick.
+all_taken   → fully booked at that time. Say what's taken, suggest next free slot or different floor.
+no_resources → no such resources in that dorm. Suggest another dorm or time.
+
+═══ STYLE ═══
+Be friendly and brief — 1–2 sentences for success, direct about errors.
+Confirm with: resource name, location, date, local time.
+Never show UUIDs or internal IDs.
+Decline off-topic requests politely.
 """
 
 TOOLS: list[dict] = [
@@ -182,6 +191,7 @@ async def _execute_tool(
     db: AsyncSession,
     user_id: uuid.UUID,
     user_name: str = "",
+    local_tz=None,
 ) -> str:
     try:
         if tool_name == "find_available_resources":
@@ -310,7 +320,7 @@ async def _execute_tool(
                 "count": len(booked),
                 "requested": count,
                 "date": date_param.isoformat(),
-                "time": f"{hour:02d}:00\u2013{(hour + duration) % 24:02d}:00",
+                "time": (lambda o: f"{(hour+o)%24:02d}:00\u2013{(hour+duration+o)%24:02d}:00")(int(local_tz.utcoffset(None).total_seconds()//3600) if local_tz else 0),
                 "note": "" if len(booked) == count else f"Only {len(booked)} were available (requested {count}).",
             }, ensure_ascii=False)
 
@@ -400,7 +410,7 @@ async def _execute_tool(
                     "resource": resource.name,
                     "location": resource.location,
                     "date": date_param.isoformat(),
-                    "time": f"{hour:02d}:00\u2013{(hour + duration) % 24:02d}:00",
+                    "time": (lambda o: f"{(hour+o)%24:02d}:00\u2013{(hour+duration+o)%24:02d}:00")(int(local_tz.utcoffset(None).total_seconds()//3600) if local_tz else 0),
                 }, ensure_ascii=False)
 
             # All candidates are taken at that time — find next free slot for first candidate
@@ -559,11 +569,149 @@ async def run_assistant(
     messages: list of {role, content} dicts from the frontend conversation history.
     Returns the final text reply.
     """
-    today = datetime.now(tz=timezone.utc).date().isoformat()
+    import os as _os
+    import zoneinfo as _zi
+    _tz_name = _os.environ.get("TZ", "UTC")
+    try:
+        _local_tz = _zi.ZoneInfo(_tz_name)
+    except Exception:
+        _local_tz = timezone.utc
+    now_local = datetime.now(tz=_local_tz)
+    today = now_local.date().isoformat()
+    utc_offset_h = int(now_local.utcoffset().total_seconds() // 3600)
+    utc_offset_str = f"UTC{utc_offset_h:+d}" if utc_offset_h != 0 else "UTC"
     user_dorm = f"Dorm {user_building}" if user_building else "unknown"
 
+    # Pre-process: detect dorm+floor+type+time and execute tool directly (bypass model)
+    def _parse_booking(text: str) -> dict | None:
+        import re as _re
+
+        t = text.lower()
+
+        # ── Dorm ─────────────────────────────────────────────────────────────
+        dm = _re.search(
+            r"(?:dorm|d)[.\s-]*(\d+)"               # dorm7 / d7 / d-7 / d 7
+            r"|(\d+)[.\s]*(?:st|nd|rd|th)?[.\s]*dorm",  # 7th dorm / 7 dorm
+            t,
+        )
+        dorm_n = next((g for g in (dm.groups() if dm else []) if g), None)
+
+        # "my dorm" / "my building" → use user's building
+        if not dorm_n and user_building and any(p in t for p in ["my dorm", "my building", "in my dorm", "my place"]):
+            dorm_n = str(user_building)
+
+        # ── Floor ─────────────────────────────────────────────────────────────
+        fm = _re.search(
+            r"floor[.\s]*(\d+)"                     # floor 6 / floor6 / f6
+            r"|(\d+)[.\s]*(?:st|nd|rd|th)[.\s]*floor",  # 6th floor
+            t,
+        )
+        floor_n = next((g for g in (fm.groups() if fm else []) if g), None)
+
+        if not (dorm_n and floor_n):
+            return None
+
+        # ── Category ──────────────────────────────────────────────────────────
+        cat = None
+        if any(w in t for w in ["study room", "study", "laundry room"]):
+            cat = "study_room"
+        elif any(w in t for w in ["wash", "washer", "laundry"]):
+            cat = "washing_machine"
+        elif any(w in t for w in ["dryer", "dry"]):
+            cat = "dryer"
+        elif "room" in t:
+            cat = "study_room"
+        if not cat:
+            return None
+
+        # ── Time ──────────────────────────────────────────────────────────────
+        # Matches: "from 18" / "at 6" / "18:00" / "6pm"
+        hm = _re.search(
+            r"(?:from|at)\s+(\d{1,2})(?:[:\-](\d{2}))?"   # from/at + hour
+            r"|(\d{1,2})pm\b"                               # 6pm
+            r"|(\d{2})[:\-](\d{2})(?!\d)",                  # 18:00 / 18-00
+            t,
+        )
+        hour_raw = None
+        is_pm = False
+        if hm:
+            g = hm.groups()
+            if g[0]:          # from/at HH
+                hour_raw = g[0]
+            elif g[2]:        # Xpm
+                hour_raw = g[2]
+                is_pm = True
+            elif g[3]:        # HH:MM
+                hour_raw = g[3]
+
+        if not hour_raw:
+            return None
+
+        h = int(hour_raw)
+
+        is_pm = is_pm or "pm" in t
+        is_am = "am" in t
+        if is_pm and h < 12:
+            h += 12
+        elif is_am and h == 12:
+            h = 0
+
+        h_utc = (h - utc_offset_h) % 24
+
+        # ── Duration ─────────────────────────────────────────────────────────
+        dur = 1
+        dur_m = _re.search(r"(?:till|until)\s+(\d{1,2})", t)
+        if dur_m:
+            h_end = int(dur_m.group(1))
+            if is_pm and h_end < 12 and h_end <= h:
+                h_end += 12
+            dur = (h_end - h) % 24 or 1
+        else:
+            dur_h = _re.search(r"for\s+(\d+)\s*hour", t)
+            if dur_h:
+                dur = int(dur_h.group(1))
+
+        # ── Date ─────────────────────────────────────────────────────────────
+        target_date = today
+        if "tomorrow" in t:
+            from datetime import timedelta as _td
+            target_date = (now_local.date() + _td(days=1)).isoformat()
+
+        return {
+            "resource_name": f"D{dorm_n}-F{floor_n}",
+            "category": cat,
+            "date": target_date,
+            "hour": h_utc,
+            "duration_hours": dur,
+        }
+
+    last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    _parsed = _parse_booking(last_user)
+
+    # If we have a fully-specified booking, execute directly and ask AI to format the reply
+    if _parsed:
+        tool_result = await _execute_tool("book_by_name", _parsed, db, user_id, user_name, local_tz=_local_tz)
+        result_data = json.loads(tool_result)
+        # Ask the AI to turn the raw result into a nice reply
+        confirm_prompt = (
+            f"Booking result: {tool_result}\n"
+            "Write a short, friendly confirmation or error message for the user. "
+            "Show resource name, location, date, and local time. No UUIDs."
+        )
+        try:
+            from openai import APIStatusError as _ASE
+            cr = await _client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": confirm_prompt}],
+            )
+            return cr.choices[0].message.content or ""
+        except Exception:
+            if result_data.get("error") == "success":
+                return f"Booked {result_data['resource']} at {result_data['location']} on {result_data['date']} {result_data['time']}."
+            return result_data.get("message", "Booking failed.")
+
     api_messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT.format(today=today, user_dorm=user_dorm)},
+        {"role": "system", "content": SYSTEM_PROMPT.format(today=today, user_dorm=user_dorm, utc_offset=utc_offset_str)},
         *[{"role": m["role"], "content": m["content"]} for m in messages],
     ]
 
