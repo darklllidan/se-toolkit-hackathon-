@@ -4,7 +4,26 @@ A real-time web platform for booking shared university campus resources — laun
 
 ## Demo
 
-> Add your screenshots here
+| Timeline | Booking modal |
+|----------|--------------|
+| ![Timeline](docs/screenshots/timeline-dashboard.png) | ![Booking modal](docs/screenshots/booking-modal.png) |
+
+| AI assistant | User profile |
+|-------------|-------------|
+| ![AI assistant](docs/screenshots/ai-assistant.png) | ![User profile](docs/screenshots/user-profile.png) |
+
+## Tech stack
+
+| Layer | Technology |
+|-------|-----------|
+| **Frontend** | React 18, TypeScript, Vite, Zustand, CSS Modules |
+| **Backend** | FastAPI, SQLAlchemy 2 (async), Alembic, Pydantic v2 |
+| **Database** | PostgreSQL 16 |
+| **Auth** | JWT (access + refresh tokens), bcrypt |
+| **Real-time** | WebSockets (native FastAPI) |
+| **AI assistant** | OpenRouter API (`openai/gpt-4o-mini`), tool-use loop |
+| **Telegram bot** | aiogram 3, APScheduler |
+| **Infra** | Docker Compose, Nginx reverse proxy |
 
 ## Product context
 
