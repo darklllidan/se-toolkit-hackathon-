@@ -24,7 +24,7 @@ _client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
 )
 
-MODEL = "mistralai/mistral-nemo"
+MODEL = "openai/gpt-4o-mini"
 
 SYSTEM_PROMPT = """You are a friendly, smart booking assistant for a university campus.
 You help with study rooms, washing machines, and dryers — nothing else.
@@ -190,6 +190,7 @@ async def _execute_tool(
     db: AsyncSession,
     user_id: uuid.UUID,
     user_name: str = "",
+    local_tz=None,
 ) -> str:
     try:
         if tool_name == "find_available_resources":
@@ -318,7 +319,7 @@ async def _execute_tool(
                 "count": len(booked),
                 "requested": count,
                 "date": date_param.isoformat(),
-                "time": f"{hour:02d}:00\u2013{(hour + duration) % 24:02d}:00",
+                "time": (lambda o: f"{(hour+o)%24:02d}:00\u2013{(hour+duration+o)%24:02d}:00")(int(local_tz.utcoffset(None).total_seconds()//3600) if local_tz else 0),
                 "note": "" if len(booked) == count else f"Only {len(booked)} were available (requested {count}).",
             }, ensure_ascii=False)
 
@@ -408,7 +409,7 @@ async def _execute_tool(
                     "resource": resource.name,
                     "location": resource.location,
                     "date": date_param.isoformat(),
-                    "time": f"{hour:02d}:00\u2013{(hour + duration) % 24:02d}:00",
+                    "time": (lambda o: f"{(hour+o)%24:02d}:00\u2013{(hour+duration+o)%24:02d}:00")(int(local_tz.utcoffset(None).total_seconds()//3600) if local_tz else 0),
                 }, ensure_ascii=False)
 
             # All candidates are taken at that time — find next free slot for first candidate
@@ -579,6 +580,76 @@ async def run_assistant(
     utc_offset_h = int(now_local.utcoffset().total_seconds() // 3600)
     utc_offset_str = f"UTC{utc_offset_h:+d}" if utc_offset_h != 0 else "UTC"
     user_dorm = f"Dorm {user_building}" if user_building else "unknown"
+
+    # Pre-process: detect dorm+floor+time and execute tool directly (bypass model guessing)
+    def _parse_booking(text: str) -> dict | None:
+        import re as _re
+        t = text.lower()
+        dm = _re.search(r"dorm\s*(\d+)|(\d+)\s*(?:st|nd|rd|th)?\s*dorm", t)
+        dorm_n = next((g for g in (dm.groups() if dm else []) if g), None)
+        fm = _re.search(r"floor\s*(\d+)|(\d+)\s*(?:st|nd|rd|th)\s*floor", t)
+        floor_n = next((g for g in (fm.groups() if fm else []) if g), None)
+        if not (dorm_n and floor_n):
+            return None
+        cat = "study_room" if any(w in t for w in ["study", "room"]) else \
+              "washing_machine" if any(w in t for w in ["wash", "washer"]) else \
+              "dryer" if "dryer" in t else None
+        if not cat:
+            return None
+        hm = _re.search(r"from\s+(\d{1,2})|at\s+(\d{1,2})", t)
+        hour_raw = next((g for g in (hm.groups() if hm else []) if g), None)
+        if not hour_raw:
+            return None
+        h = int(hour_raw)
+        if "pm" in t and h < 12:
+            h += 12
+        elif "am" in t and h == 12:
+            h = 0
+        h_utc = (h - utc_offset_h) % 24
+        dur = 1
+        dur_m = _re.search(r"till\s+(\d{1,2})", t)
+        if dur_m:
+            h_end = int(dur_m.group(1))
+            if "pm" in t and h_end < 12:
+                h_end += 12
+            dur = (h_end - h) % 24 or 1
+        # figure out date: tomorrow or today
+        target_date = today
+        if "tomorrow" in t:
+            from datetime import timedelta as _td
+            target_date = (now_local.date() + _td(days=1)).isoformat()
+        return {
+            "resource_name": f"D{dorm_n}-F{floor_n}",
+            "category": cat,
+            "date": target_date,
+            "hour": h_utc,
+            "duration_hours": dur,
+        }
+
+    last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    _parsed = _parse_booking(last_user)
+
+    # If we have a fully-specified booking, execute directly and ask AI to format the reply
+    if _parsed:
+        tool_result = await _execute_tool("book_by_name", _parsed, db, user_id, user_name, local_tz=_local_tz)
+        result_data = json.loads(tool_result)
+        # Ask the AI to turn the raw result into a nice reply
+        confirm_prompt = (
+            f"Booking result: {tool_result}\n"
+            "Write a short, friendly confirmation or error message for the user. "
+            "Show resource name, location, date, and local time. No UUIDs."
+        )
+        try:
+            from openai import APIStatusError as _ASE
+            cr = await _client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": confirm_prompt}],
+            )
+            return cr.choices[0].message.content or ""
+        except Exception:
+            if result_data.get("error") == "success":
+                return f"Booked {result_data['resource']} at {result_data['location']} on {result_data['date']} {result_data['time']}."
+            return result_data.get("message", "Booking failed.")
 
     api_messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT.format(today=today, user_dorm=user_dorm, utc_offset=utc_offset_str)},
