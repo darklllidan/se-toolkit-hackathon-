@@ -6,7 +6,11 @@ A real-time web platform for booking shared university campus resources — laun
 
 | Timeline | Booking modal |
 |----------|--------------|
-| ![Timeline](docs/screenshots/dashboard-timeline.png) | ![Booking modal](docs/screenshots/booking-modal.png) |
+| ![Timeline](docs/screenshots/timeline-dashboard.png) | ![Booking modal](docs/screenshots/booking-modal.png) |
+
+| AI assistant | User profile |
+|-------------|-------------|
+| ![AI assistant](docs/screenshots/ai-assistant.png) | ![User profile](docs/screenshots/user-profile.png) |
 
 ## Tech stack
 
