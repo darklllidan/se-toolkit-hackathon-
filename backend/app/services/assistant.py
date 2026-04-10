@@ -28,22 +28,30 @@ MODEL = "mistralai/mistral-nemo"
 
 SYSTEM_PROMPT = """You are a friendly, smart booking assistant for a university campus.
 You help with study rooms, washing machines, and dryers — nothing else.
-Today: {today}. This user lives in {user_dorm}.
+Today (local time): {today}. Server timezone: {utc_offset}. This user lives in {user_dorm}.
+
+IMPORTANT — TIME HANDLING:
+The backend stores all times in UTC. When the user says a time (e.g. "6 pm", "18:00"), you MUST convert it to UTC before passing to any tool.
+Conversion: subtract the UTC offset. Example with {utc_offset}: user says "6 pm" (18:00 local) → hour=15 in UTC (18 - 3 = 15).
+Always pass `hour` as UTC integer to book_by_name, book_random, and find_available_resources.
+"today" and "tomorrow" refer to local dates ({today} is today locally).
 
 Your job is to understand what the user wants and get it done with minimal back-and-forth.
 Respond naturally, like a helpful person — not like a bot reading from a script.
 
 ── UNDERSTANDING REQUESTS ──
 Read intent, not just keywords. Examples:
-  "book a washer at 10 tomorrow"        → book_random(washing_machine, tomorrow, 10, count=1)
-  "book me 3 random study rooms at 14"  → book_random(study_room, date, 14, count=3)
+  "book a washer at 10 tomorrow"        → book_random(washing_machine, tomorrow, hour=7 if UTC+3, count=1)
+  "book me 3 random study rooms at 14"  → book_random(study_room, date, hour=11 if UTC+3, count=3)
   "random one from d6"                  → book_random(..., location_hint="Dorm 6", count=1)
   "pick one from dorm 3"                → book_random(..., location_hint="Dorm 3", count=1)
   "my dorm" / "my building"             → location_hint="{user_dorm}" (never ask which dorm)
-  "book d7-f6 washer at 10"             → book_by_name("D7-F6", ..., category="washing_machine")
+  "book d7-f6 washer at 10"             → book_by_name("D7-F6", ..., category="washing_machine", hour=7 if UTC+3)
   "what study rooms are free tomorrow?" → find_available_resources(study_room, date)
+  "from 6 till 7 pm"                    → hour=15 (UTC), duration_hours=1 (if UTC+3)
 
 Dorm shorthand: "d1"=Dorm 1, "d6"=Dorm 6, "dorm3"=Dorm 3, "3rd dorm"=Dorm 3, etc.
+When no resource type is mentioned, ask once: "What would you like to book — study room, washer, or dryer?"
 
 ── WHEN TO LIST vs WHEN TO BOOK ──
 - "book me a washer" with no dorm/floor hint → find_available_resources, show list, let user pick
@@ -559,11 +567,21 @@ async def run_assistant(
     messages: list of {role, content} dicts from the frontend conversation history.
     Returns the final text reply.
     """
-    today = datetime.now(tz=timezone.utc).date().isoformat()
+    import os as _os
+    import zoneinfo as _zi
+    _tz_name = _os.environ.get("TZ", "UTC")
+    try:
+        _local_tz = _zi.ZoneInfo(_tz_name)
+    except Exception:
+        _local_tz = timezone.utc
+    now_local = datetime.now(tz=_local_tz)
+    today = now_local.date().isoformat()
+    utc_offset_h = int(now_local.utcoffset().total_seconds() // 3600)
+    utc_offset_str = f"UTC{utc_offset_h:+d}" if utc_offset_h != 0 else "UTC"
     user_dorm = f"Dorm {user_building}" if user_building else "unknown"
 
     api_messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT.format(today=today, user_dorm=user_dorm)},
+        {"role": "system", "content": SYSTEM_PROMPT.format(today=today, user_dorm=user_dorm, utc_offset=utc_offset_str)},
         *[{"role": m["role"], "content": m["content"]} for m in messages],
     ]
 
